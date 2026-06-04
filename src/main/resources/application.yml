@@ -87,7 +87,7 @@ rag:
 query-rewrite:
   enabled: true
   model: "qwen3-max"
-  max-history-messages: 6
+  max-history-messages: 12
 
 # 会话摘要记忆配置（用于历史超窗后的增量压缩）
 conversation-summary:

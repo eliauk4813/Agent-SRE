@@ -232,13 +232,65 @@ public class ChatService {
         }
 
         private String chooseRetrievalQuery(String toolQuery) {
+            String normalizedToolQuery = toolQuery == null ? "" : toolQuery.trim();
             if (!rewriteResult.isRewritten()) {
-                return toolQuery;
+                return normalizedToolQuery;
             }
-            if (looksLikeContextDependentQuestion(toolQuery)) {
-                return rewriteResult.getStandaloneQuestion();
+
+            String standaloneQuestion = rewriteResult.getStandaloneQuestion() == null
+                    ? ""
+                    : rewriteResult.getStandaloneQuestion().trim();
+            if (standaloneQuestion.isEmpty()) {
+                return normalizedToolQuery;
             }
-            return toolQuery;
+            if (normalizedToolQuery.isEmpty()) {
+                return standaloneQuestion;
+            }
+            if (looksLikeContextDependentQuestion(normalizedToolQuery)) {
+                return standaloneQuestion;
+            }
+            if (isStandaloneMoreInformative(standaloneQuestion, normalizedToolQuery)) {
+                return standaloneQuestion;
+            }
+            return normalizedToolQuery;
+        }
+
+        private boolean isStandaloneMoreInformative(String standaloneQuestion, String toolQuery) {
+            String standalone = normalizeForComparison(standaloneQuestion);
+            String tool = normalizeForComparison(toolQuery);
+            if (standalone.equals(tool)) {
+                return false;
+            }
+            if (standalone.length() < Math.max(12, tool.length())) {
+                return false;
+            }
+            if (standalone.contains(tool) && standalone.length() <= tool.length() + 80) {
+                return true;
+            }
+
+            int standaloneSignalCount = countRetrievalSignals(standalone);
+            int toolSignalCount = countRetrievalSignals(tool);
+            return standalone.length() >= tool.length() + 8 && standaloneSignalCount >= toolSignalCount;
+        }
+
+        private String normalizeForComparison(String value) {
+            return value == null ? "" : value.trim().replaceAll("\\s+", " ");
+        }
+
+        private int countRetrievalSignals(String query) {
+            int count = 0;
+            String normalized = query == null ? "" : query.toLowerCase();
+            String[] signals = {
+                    "告警", "故障", "异常", "错误", "报错", "不可用", "慢", "超时", "延迟",
+                    "cpu", "内存", "memory", "磁盘", "disk", "oom", "503", "500", "日志",
+                    "排查", "处理", "解决", "恢复", "服务", "接口", "trace", "traceid"
+            };
+            for (String signal : signals) {
+                if (normalized.contains(signal)) {
+                    count++;
+                }
+            }
+            return count;
         }
 
         private boolean looksLikeContextDependentQuestion(String query) {
@@ -246,21 +298,34 @@ public class ChatService {
             if (normalized.isEmpty()) {
                 return true;
             }
-            if (normalized.length() <= 8) {
+            if (normalized.length() <= 8 && countRetrievalSignals(normalized) == 0) {
                 return true;
             }
+            String lower = normalized.toLowerCase();
             return normalized.contains("这个")
                     || normalized.contains("那个")
+                    || normalized.contains("这些")
+                    || normalized.contains("那些")
+                    || normalized.contains("上述")
+                    || normalized.contains("前面")
+                    || normalized.contains("刚才")
                     || normalized.contains("这个呢")
                     || normalized.contains("那个呢")
-                    || normalized.contains("怎么处理")
-                    || normalized.contains("怎么排查")
-                    || normalized.contains("怎么解决")
+                    || normalized.contains("它怎么")
                     || normalized.startsWith("那")
                     || normalized.startsWith("这")
                     || normalized.startsWith("它")
                     || normalized.startsWith("对于这个")
-                    || normalized.startsWith("关于这个");
+                    || normalized.startsWith("关于这个")
+                    || lower.contains(" this ")
+                    || lower.contains(" that ")
+                    || lower.contains(" it ")
+                    || lower.startsWith("this ")
+                    || lower.startsWith("that ")
+                    || lower.startsWith("it ")
+                    || lower.equals("this")
+                    || lower.equals("that")
+                    || lower.equals("it");
         }
     }
 }

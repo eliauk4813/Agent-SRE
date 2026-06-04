@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Standalone Question Rewrite 服务。
@@ -27,6 +28,12 @@ import java.util.Map;
 public class StandaloneQuestionRewriteService {
 
     private static final Logger logger = LoggerFactory.getLogger(StandaloneQuestionRewriteService.class);
+    private static final int MAX_REWRITE_LENGTH = 180;
+    private static final int LOG_PREVIEW_LENGTH = 80;
+    private static final Pattern LEADING_LABEL_PATTERN = Pattern.compile(
+            "^(?:改写后的(?:独立)?(?:检索)?问题|独立(?:检索)?问题|检索问题|问题|查询|Query|Question)\\s*[:：]\\s*",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern LEADING_ORDER_PATTERN = Pattern.compile("^(?:[-*•]|\\d+[.、)]|[一二三四五六七八九十]+[、.])\\s*");
 
     @Value("${spring.ai.dashscope.api-key}")
     private String apiKey;
@@ -37,7 +44,7 @@ public class StandaloneQuestionRewriteService {
     @Value("${query-rewrite.model:qwen3-max}")
     private String model;
 
-    @Value("${query-rewrite.max-history-messages:6}")
+    @Value("${query-rewrite.max-history-messages:12}")
     private int maxHistoryMessages;
 
     private final Generation generation = new Generation();
@@ -67,7 +74,8 @@ public class StandaloneQuestionRewriteService {
                 return RewriteResult.notRewritten(safeQuestion, "rewrite unchanged");
             }
 
-            logger.info("Standalone rewrite 完成, original={}, rewritten={}", safeQuestion, sanitized);
+            logger.info("Standalone rewrite 完成, originalLength={}, rewrittenLength={}", safeQuestion.length(), sanitized.length());
+            logger.debug("Standalone rewrite 明细, original={}, rewritten={}", abbreviateForLog(safeQuestion), abbreviateForLog(sanitized));
             return RewriteResult.rewritten(safeQuestion, sanitized);
         } catch (Exception e) {
             logger.warn("Standalone rewrite 失败，回退原问题: {}", e.getMessage());
@@ -94,11 +102,12 @@ public class StandaloneQuestionRewriteService {
 
         return "你是一个查询改写助手，任务是把当前用户问题改写为适合内部知识库检索的独立问题。\n"
                 + "请严格遵守以下规则：\n"
-                + "1. 输出必须是一个单独的问题句子，不要输出解释、分析、前缀或 Markdown。\n"
-                + "2. 必须结合历史对话补全指代、省略和上下文，使结果完整、自包含。\n"
-                + "3. 尽量保留用户原意，不要扩展超出对话中明确出现的新事实。\n"
+                + "1. 只输出一个单独的问题句子，不要输出解释、分析、前缀、编号、候选列表或 Markdown。\n"
+                + "2. 必须结合历史对话补全明确的指代、省略和上下文，使结果完整、自包含。\n"
+                + "3. 只允许使用对话中明确出现的信息，不要推断根因，不要添加未被明确提到的服务、组件、原因或结论。\n"
                 + "4. 如果当前问题已经完整清晰，原样返回或做最小幅度润色。\n"
-                + "5. 结果目标是用于内部技术文档检索，措辞应偏向故障现象、告警名称、排查步骤、处理方案等表达。\n\n"
+                + "5. 结果目标是用于内部技术文档检索，措辞应偏向故障现象、告警名称、排查步骤、处理方案等表达。\n"
+                + "6. 改写结果尽量控制在 120 个中文字符以内。\n\n"
                 + "对话历史：\n"
                 + historyText
                 + "\n当前用户问题：\n"
@@ -141,22 +150,71 @@ public class StandaloneQuestionRewriteService {
 
     private String sanitizeRewriteResult(String rewritten, String fallbackQuestion) {
         String sanitized = defaultString(rewritten).trim();
-        if (sanitized.startsWith("```")) {
-            sanitized = sanitized.replace("```", "").trim();
-        }
+        sanitized = sanitized.replace("```json", "")
+                .replace("```text", "")
+                .replace("```", "")
+                .trim();
         sanitized = sanitized.replace("\r", " ").replace("\n", " ").trim();
+        sanitized = sanitized.replaceAll("\\s+", " ").trim();
+        sanitized = sanitized.replaceAll("^['\"“”‘’]+|['\"“”‘’]+$", "").trim();
+        sanitized = stripLeadingNoise(sanitized);
+        sanitized = keepFirstQuestionSentence(sanitized).trim();
         sanitized = sanitized.replaceAll("^['\"“”‘’]+|['\"“”‘’]+$", "").trim();
 
         if (sanitized.isEmpty()) {
             return fallbackQuestion;
         }
 
-        if (sanitized.length() > 200) {
-            logger.warn("rewrite 结果过长，回退原问题: {}", sanitized);
+        if (sanitized.length() > MAX_REWRITE_LENGTH) {
+            logger.warn("rewrite 结果过长，回退原问题, rewrittenLength={}", sanitized.length());
+            logger.debug("rewrite 过长明细, rewritten={}", abbreviateForLog(sanitized));
             return fallbackQuestion;
         }
 
         return sanitized;
+    }
+
+    private String stripLeadingNoise(String value) {
+        String stripped = value;
+        boolean changed;
+        do {
+            String before = stripped;
+            stripped = LEADING_ORDER_PATTERN.matcher(stripped).replaceFirst("").trim();
+            stripped = LEADING_LABEL_PATTERN.matcher(stripped).replaceFirst("").trim();
+            changed = !before.equals(stripped);
+        } while (changed);
+        return stripped;
+    }
+
+    private String keepFirstQuestionSentence(String value) {
+        int questionMarkIndex = firstPositiveIndex(value.indexOf('？'), value.indexOf('?'));
+        if (questionMarkIndex >= 0) {
+            return value.substring(0, questionMarkIndex + 1);
+        }
+
+        int separatorIndex = firstPositiveIndex(value.indexOf('。'), value.indexOf(';'), value.indexOf('；'));
+        if (separatorIndex > 0 && separatorIndex < value.length() - 1) {
+            return value.substring(0, separatorIndex + 1);
+        }
+        return value;
+    }
+
+    private int firstPositiveIndex(int... indexes) {
+        int min = Integer.MAX_VALUE;
+        for (int index : indexes) {
+            if (index >= 0 && index < min) {
+                min = index;
+            }
+        }
+        return min == Integer.MAX_VALUE ? -1 : min;
+    }
+
+    private String abbreviateForLog(String value) {
+        String text = defaultString(value).replaceAll("\\s+", " ").trim();
+        if (text.length() <= LOG_PREVIEW_LENGTH) {
+            return text;
+        }
+        return text.substring(0, LOG_PREVIEW_LENGTH) + "...";
     }
 
     private String defaultString(String value) {
