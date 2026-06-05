@@ -77,10 +77,18 @@ document:
 
 # RAG 配置
 rag:
-  vector-top-k: 5
-  bm25-top-k: 5
+  vector-top-k: 10
+  bm25-top-k: 10
   final-top-n: 4
   rrf-k: 60
+  rerank-enabled: true
+  rerank-candidate-top-k: 12
+  rerank-final-top-n: 4
+  rerank-timeout-ms: 5000
+  rerank-fail-open: true
+  rerank-model: qwen3-rerank
+  rerank-instruct: "Given a web search query, retrieve relevant passages that answer the query."
+  rerank-api-url: https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
   model: "qwen3-max"  # 大语言模型名称
 
 # Standalone Question Rewrite 配置（仅用于内部文档检索）

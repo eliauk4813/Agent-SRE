@@ -1,0 +1,4 @@
+#NOTE: This is a Maven Resolver internal implementation file, its format can be changed without prior notice.
+#Fri Jun 05 11:21:12 CST 2026
+http\://maven.aliyun.com/nexus/content/groups/public/.error=Could not transfer artifact org.springframework.boot\:spring-boot-starter-parent\:pom\:3.2.0 from/to alimaven (http\://maven.aliyun.com/nexus/content/groups/public/)\: Permission denied\: connect
+@default-alimaven-http\://maven.aliyun.com/nexus/content/groups/public/.lastUpdated=1780629672792

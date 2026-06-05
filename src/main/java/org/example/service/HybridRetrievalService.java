@@ -17,8 +17,8 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
- * 混合召回服务
- * 同时执行向量召回与 ES 关键词召回，并使用 RRF 融合排序。
+ * 混合召回服务。
+ * 执行向量检索与 ES 关键词检索，先通过 RRF 融合，再按配置执行 rerank。
  */
 @Service
 public class HybridRetrievalService {
@@ -27,6 +27,7 @@ public class HybridRetrievalService {
 
     private final VectorSearchService vectorSearchService;
     private final Bm25SearchService bm25SearchService;
+    private final RerankService rerankService;
 
     @Value("${rag.vector-top-k:10}")
     private int vectorTopK;
@@ -40,13 +41,28 @@ public class HybridRetrievalService {
     @Value("${rag.rrf-k:60}")
     private int rrfK;
 
-    public HybridRetrievalService(VectorSearchService vectorSearchService, Bm25SearchService bm25SearchService) {
+    @Value("${rag.rerank-enabled:true}")
+    private boolean rerankEnabled;
+
+    @Value("${rag.rerank-candidate-top-k:12}")
+    private int rerankCandidateTopK;
+
+    @Value("${rag.rerank-final-top-n:4}")
+    private int rerankFinalTopN;
+
+    @Value("${rag.rerank-fail-open:true}")
+    private boolean rerankFailOpen;
+
+    public HybridRetrievalService(VectorSearchService vectorSearchService,
+                                  Bm25SearchService bm25SearchService,
+                                  RerankService rerankService) {
         this.vectorSearchService = vectorSearchService;
         this.bm25SearchService = bm25SearchService;
+        this.rerankService = rerankService;
     }
 
     public List<HybridSearchResult> search(String query) {
-        logger.info("开始混合召回(RRF), query={}", query);
+        logger.info("开始混合召回与排序, query={}", query);
 
         List<SearchResult> vectorResults = vectorSearchService.searchSimilarDocuments(query, vectorTopK);
         List<Bm25SearchService.SearchHit> bm25Results = bm25SearchService.search(query, bm25TopK);
@@ -82,14 +98,47 @@ public class HybridRetrievalService {
             }
         }
 
-        List<HybridSearchResult> ranked = new ArrayList<>(merged.values());
-        for (HybridSearchResult result : ranked) {
+        List<HybridSearchResult> rrfResults = new ArrayList<>(merged.values());
+        for (HybridSearchResult result : rrfResults) {
+            result.setRerankScore(0D);
+            result.setRerankRank(null);
             result.setFinalScore(result.getRrfScore());
+            result.setRankingStage("rrf");
         }
 
-        return ranked.stream()
+        rrfResults = rrfResults.stream()
                 .sorted(Comparator.comparingDouble(HybridSearchResult::getFinalScore).reversed())
-                .limit(finalTopN)
+                .collect(Collectors.toList());
+
+        if (!rerankEnabled || rrfResults.isEmpty()) {
+            return limitResults(rrfResults, finalTopN);
+        }
+
+        int candidateCount = Math.min(rerankCandidateTopK, rrfResults.size());
+        int rerankTopN = Math.min(Math.max(rerankFinalTopN, 1), candidateCount);
+        List<HybridSearchResult> rerankCandidates = new ArrayList<>(rrfResults.subList(0, candidateCount));
+
+        long startTime = System.currentTimeMillis();
+        try {
+            List<HybridSearchResult> reranked = rerankService.rerank(query, rerankCandidates, rerankTopN);
+            long elapsed = System.currentTimeMillis() - startTime;
+            logger.info("Rerank 完成, query={}, candidates={}, elapsedMs={}, fallback=false",
+                    query, candidateCount, elapsed);
+            return limitResults(reranked, rerankTopN);
+        } catch (Exception e) {
+            long elapsed = System.currentTimeMillis() - startTime;
+            logger.warn("Rerank 失败, query={}, candidates={}, elapsedMs={}, fallback={}",
+                    query, candidateCount, elapsed, rerankFailOpen, e);
+            if (!rerankFailOpen) {
+                throw new RuntimeException("Rerank 执行失败: " + e.getMessage(), e);
+            }
+            return limitResults(rrfResults, rerankTopN);
+        }
+    }
+
+    private List<HybridSearchResult> limitResults(List<HybridSearchResult> results, int topN) {
+        return results.stream()
+                .limit(Math.max(topN, 0))
                 .collect(Collectors.toList());
     }
 
@@ -198,6 +247,9 @@ public class HybridRetrievalService {
         private double bm25Score;
         private Integer bm25Rank;
         private double rrfScore;
+        private double rerankScore;
+        private Integer rerankRank;
         private double finalScore;
+        private String rankingStage;
     }
 }
