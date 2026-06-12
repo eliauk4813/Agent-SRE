@@ -51,6 +51,9 @@ public class ChatController {
     private ConversationSummaryService conversationSummaryService;
 
     @Autowired
+    private org.example.service.ConversationFactsService conversationFactsService;
+
+    @Autowired
     private ToolCallbackProvider tools;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
@@ -82,7 +85,9 @@ public class ChatController {
             // 获取历史消息
             List<Map<String, String>> history = session.getHistory();
             String conversationSummary = session.getConversationSummary();
-            logger.info("会话历史消息对数: {}, 摘要长度: {}", history.size() / 2, conversationSummary.length());
+            String conversationFacts = session.getConversationFacts();
+            logger.info("会话历史消息对数: {}, 摘要长度: {}, 关键事实长度: {}",
+                    history.size() / 2, conversationSummary.length(), conversationFacts.length());
 
             // 创建 DashScope API 和 ChatModel
             DashScopeApi dashScopeApi = chatService.createDashScopeApi();
@@ -94,10 +99,10 @@ public class ChatController {
             logger.info("开始 ReactAgent 对话（支持自动工具调用）");
             
             // 构建系统提示词（包含历史摘要与最近历史消息）
-            String systemPrompt = chatService.buildSystemPrompt(conversationSummary, history);
+            String systemPrompt = chatService.buildSystemPrompt(conversationSummary, conversationFacts, history);
 
             // 预生成适用于文档检索的独立问题
-            var rewriteResult = chatService.prepareStandaloneQuestion(request.getQuestion(), history);
+            var rewriteResult = chatService.prepareStandaloneQuestion(request.getQuestion(), conversationFacts, history);
             
             // 创建 ReactAgent
             ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt, rewriteResult);
@@ -106,7 +111,7 @@ public class ChatController {
             String fullAnswer = chatService.executeChat(agent, request.getQuestion());
             
             // 更新会话历史
-            session.addMessage(request.getQuestion(), fullAnswer, conversationSummaryService);
+            session.addMessage(request.getQuestion(), fullAnswer, conversationSummaryService, conversationFactsService);
             logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
                 request.getId(), session.getMessagePairCount());
             
@@ -174,7 +179,9 @@ public class ChatController {
                 // 获取历史消息
                 List<Map<String, String>> history = session.getHistory();
                 String conversationSummary = session.getConversationSummary();
-                logger.info("ReactAgent 会话历史消息对数: {}, 摘要长度: {}", history.size() / 2, conversationSummary.length());
+                String conversationFacts = session.getConversationFacts();
+                logger.info("ReactAgent 会话历史消息对数: {}, 摘要长度: {}, 关键事实长度: {}",
+                        history.size() / 2, conversationSummary.length(), conversationFacts.length());
 
                 // 创建 DashScope API 和 ChatModel
                 DashScopeApi dashScopeApi = chatService.createDashScopeApi();
@@ -186,10 +193,10 @@ public class ChatController {
                 logger.info("开始 ReactAgent 流式对话（支持自动工具调用）");
                 
                 // 构建系统提示词（包含历史摘要与最近历史消息）
-                String systemPrompt = chatService.buildSystemPrompt(conversationSummary, history);
+                String systemPrompt = chatService.buildSystemPrompt(conversationSummary, conversationFacts, history);
 
                 // 预生成适用于文档检索的独立问题
-                var rewriteResult = chatService.prepareStandaloneQuestion(request.getQuestion(), history);
+                var rewriteResult = chatService.prepareStandaloneQuestion(request.getQuestion(), conversationFacts, history);
                 
                 // 创建 ReactAgent
                 ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt, rewriteResult);
@@ -257,7 +264,7 @@ public class ChatController {
                                 request.getId(), fullAnswer.length());
                             
                             // 更新会话历史
-                            session.addMessage(request.getQuestion(), fullAnswer, conversationSummaryService);
+                            session.addMessage(request.getQuestion(), fullAnswer, conversationSummaryService, conversationFactsService);
                             logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
                                 request.getId(), session.getMessagePairCount());
                             
@@ -431,6 +438,8 @@ public class ChatController {
         private final List<Map<String, String>> messageHistory;
         // 对超出窗口的旧历史进行增量压缩后的摘要记忆
         private String conversationSummary;
+        // 对不适合丢失的高价值细节做规则化保留
+        private String conversationFacts;
         private final long createTime;
         private final ReentrantLock lock;
 
@@ -438,6 +447,7 @@ public class ChatController {
             this.sessionId = sessionId;
             this.messageHistory = new ArrayList<>();
             this.conversationSummary = "";
+            this.conversationFacts = "";
             this.createTime = System.currentTimeMillis();
             this.lock = new ReentrantLock();
         }
@@ -446,7 +456,10 @@ public class ChatController {
          * 添加一对消息（用户问题 + AI回复）
          * 自动管理历史消息窗口大小；超过窗口时先做增量摘要，再淘汰最旧消息对
          */
-        public void addMessage(String userQuestion, String aiAnswer, ConversationSummaryService summaryService) {
+        public void addMessage(String userQuestion,
+                               String aiAnswer,
+                               ConversationSummaryService summaryService,
+                               org.example.service.ConversationFactsService factsService) {
             lock.lock();
             try {
                 // 添加用户消息
@@ -475,6 +488,9 @@ public class ChatController {
                         var summaryResult = summaryService.summarize(conversationSummary, evictedMessages);
                         conversationSummary = summaryResult.getSummary() == null ? "" : summaryResult.getSummary();
                     }
+                    if (factsService != null) {
+                        conversationFacts = factsService.mergeFacts(conversationFacts, evictedMessages);
+                    }
 
                     // 成对删除最旧的消息（删除前2条）
                     messageHistory.remove(0);
@@ -483,8 +499,8 @@ public class ChatController {
                     }
                 }
 
-                logger.debug("会话 {} 更新历史消息，当前消息对数: {}, 摘要长度: {}",
-                    sessionId, messageHistory.size() / 2, conversationSummary.length());
+                logger.debug("会话 {} 更新历史消息，当前消息对数: {}, 摘要长度: {}, 关键事实长度: {}",
+                    sessionId, messageHistory.size() / 2, conversationSummary.length(), conversationFacts.length());
 
             } finally {
                 lock.unlock();
@@ -516,6 +532,15 @@ public class ChatController {
             }
         }
 
+        public String getConversationFacts() {
+            lock.lock();
+            try {
+                return conversationFacts == null ? "" : conversationFacts;
+            } finally {
+                lock.unlock();
+            }
+        }
+
         /**
          * 清空历史消息
          */
@@ -524,6 +549,7 @@ public class ChatController {
             try {
                 messageHistory.clear();
                 conversationSummary = "";
+                conversationFacts = "";
                 logger.info("会话 {} 历史消息与摘要记忆已清空", sessionId);
             } finally {
                 lock.unlock();

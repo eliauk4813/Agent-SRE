@@ -103,6 +103,9 @@ conversation-summary:
   model: "qwen3-30b-a3b-instruct-2507"
   max-length: 1200
 
+conversation-facts:
+  max-length: 600
+
 es:
   host: localhost
   port: 9200

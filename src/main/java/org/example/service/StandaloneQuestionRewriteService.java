@@ -49,8 +49,11 @@ public class StandaloneQuestionRewriteService {
 
     private final Generation generation = new Generation();
 
-    public RewriteResult rewrite(String currentQuestion, List<Map<String, String>> history) {
+    public RewriteResult rewrite(String currentQuestion,
+                                 String conversationFacts,
+                                 List<Map<String, String>> history) {
         String safeQuestion = defaultString(currentQuestion).trim();
+        String safeFacts = defaultString(conversationFacts).trim();
         List<Map<String, String>> safeHistory = history == null ? List.of() : history;
 
         if (!enabled) {
@@ -66,7 +69,7 @@ public class StandaloneQuestionRewriteService {
         }
 
         try {
-            String prompt = buildRewritePrompt(safeQuestion, safeHistory);
+            String prompt = buildRewritePrompt(safeQuestion, safeFacts, safeHistory);
             String rewritten = callRewriteModel(prompt);
             String sanitized = sanitizeRewriteResult(rewritten, safeQuestion);
 
@@ -83,7 +86,9 @@ public class StandaloneQuestionRewriteService {
         }
     }
 
-    private String buildRewritePrompt(String currentQuestion, List<Map<String, String>> history) {
+    private String buildRewritePrompt(String currentQuestion,
+                                      String conversationFacts,
+                                      List<Map<String, String>> history) {
         StringBuilder historyText = new StringBuilder();
         List<Map<String, String>> trimmedHistory = trimHistory(history);
 
@@ -104,10 +109,14 @@ public class StandaloneQuestionRewriteService {
                 + "请严格遵守以下规则：\n"
                 + "1. 只输出一个单独的问题句子，不要输出解释、分析、前缀、编号、候选列表或 Markdown。\n"
                 + "2. 必须结合历史对话补全明确的指代、省略和上下文，使结果完整、自包含。\n"
-                + "3. 只允许使用对话中明确出现的信息，不要推断根因，不要添加未被明确提到的服务、组件、原因或结论。\n"
-                + "4. 如果当前问题已经完整清晰，原样返回或做最小幅度润色。\n"
-                + "5. 结果目标是用于内部技术文档检索，措辞应偏向故障现象、告警名称、排查步骤、处理方案等表达。\n"
-                + "6. 改写结果尽量控制在 120 个中文字符以内。\n\n"
+                + "3. 如果提供了关键事实记忆，优先继承其中已经确认的实体、traceId、错误码、接口、服务名和时间范围。\n"
+                + "4. 只允许使用对话中明确出现的信息，不要推断根因，不要添加未被明确提到的服务、组件、原因或结论。\n"
+                + "5. 如果当前问题已经完整清晰，原样返回或做最小幅度润色。\n"
+                + "6. 结果目标是用于内部技术文档检索，措辞应偏向故障现象、告警名称、排查步骤、处理方案等表达。\n"
+                + "7. 改写结果尽量控制在 120 个中文字符以内。\n\n"
+                + "关键事实记忆：\n"
+                + (conversationFacts.isBlank() ? "（无）" : conversationFacts)
+                + "\n\n"
                 + "对话历史：\n"
                 + historyText
                 + "\n当前用户问题：\n"

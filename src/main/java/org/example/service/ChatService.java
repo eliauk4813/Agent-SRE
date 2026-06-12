@@ -90,7 +90,9 @@ public class ChatService {
      * @param history 最近历史消息列表
      * @return 完整的系统提示词
      */
-    public String buildSystemPrompt(String conversationSummary, List<Map<String, String>> history) {
+    public String buildSystemPrompt(String conversationSummary,
+                                    String conversationFacts,
+                                    List<Map<String, String>> history) {
         StringBuilder systemPromptBuilder = new StringBuilder();
 
         systemPromptBuilder.append("你是一个专业的智能助手，可以获取当前时间、查询内部文档知识库、查询 Prometheus 告警，并查询腾讯云 CLS 中的结构化日志。\n");
@@ -98,6 +100,12 @@ public class ChatService {
         systemPromptBuilder.append("当用户需要查询公司内部文档、流程、最佳实践或技术指南时，使用 queryInternalDocs 工具。\n");
         systemPromptBuilder.append("当用户需要查询 Prometheus 告警、监控指标或系统告警状态时，使用 queryPrometheusAlerts 工具。\n");
         systemPromptBuilder.append("当用户需要按告警排查日志时，优先使用 queryLogsByAlert；当用户提供 traceId 时，使用 queryLogsByTraceId；只有在需要自定义检索条件时才使用 queryLogs。默认地域为 ap-guangzhou。\n\n");
+
+        if (conversationFacts != null && !conversationFacts.trim().isEmpty()) {
+            systemPromptBuilder.append("--- 历史关键事实记忆 ---\n");
+            systemPromptBuilder.append(conversationFacts.trim()).append("\n");
+            systemPromptBuilder.append("--- 历史关键事实记忆结束 ---\n\n");
+        }
 
         if (conversationSummary != null && !conversationSummary.trim().isEmpty()) {
             systemPromptBuilder.append("--- 历史摘要记忆 ---\n");
@@ -126,9 +134,10 @@ public class ChatService {
     }
 
     public StandaloneQuestionRewriteService.RewriteResult prepareStandaloneQuestion(String question,
+                                                                                    String conversationFacts,
                                                                                     List<Map<String, String>> history) {
         StandaloneQuestionRewriteService.RewriteResult rewriteResult =
-                standaloneQuestionRewriteService.rewrite(question, history);
+                standaloneQuestionRewriteService.rewrite(question, conversationFacts, history);
         logger.info("文档检索 rewrite 结果, rewritten={}, reason={}, original={}, standalone={}",
                 rewriteResult.isRewritten(),
                 rewriteResult.getReason(),
